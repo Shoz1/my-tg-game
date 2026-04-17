@@ -10,7 +10,7 @@
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #1a1a2e; font-family: 'VT323', monospace; color: white; user-select: none; touch-action: none; }
         #ui { position: absolute; top: 10px; left: 10px; z-index: 10; font-size: 28px; font-weight: bold; pointer-events: none; text-shadow: 2px 2px 0 #000; letter-spacing: 2px; }
         #ui span { color: #f1c40f; } 
-        canvas { display: block; image-rendering: pixelated; }
+        canvas { display: block; image-rendering: pixelated; /* Четкий пиксель-арт */ }
     </style>
 </head>
 <body>
@@ -22,6 +22,7 @@
     <canvas id="gameCanvas"></canvas>
 
 <script>
+    // --- ИНИЦИАЛИЗАЦИЯ И УПРАВЛЕНИЕ ---
     const tg = window.Telegram.WebApp;
     tg.expand();
     tg.ready();
@@ -32,38 +33,40 @@
     const uiScore = document.getElementById('score-val');
 
     let width, height, cx, cy, groundY;
-    ctx.imageSmoothingEnabled = false;
+    ctx.imageSmoothingEnabled = false; // Отключаем сглаживание
 
-    let gameState = { score: 0, coins: 0, level: 1, isRunning: false, kuzyaStats: { speed: 5, jump: 20 } };
+    let gameState = { score: 0, coins: 0, level: 1, isRunning: false, kuzyaStats: { speed: 5, jump: 18 } };
 
-    // --- ИДЕАЛЬНАЯ НАРЕЗКА АТЛАСА (6x3) ---
+    // --- ЗАГРУЗКА И НАСТРОЙКА СПРАЙТОВ (МАТЕМАТИЧЕСКИ ТОЧНАЯ СЕТКА) ---
     const atlas = new Image();
-    atlas.src = 'image_8.png'; // Убедись, что на GitHub лежит прозрачный .PNG файл!
+    atlas.src = 'image_8.png'; // Убедись, что на GitHub лежит ПРОЗРАЧНЫЙ .png файл!
     let isAtlasLoaded = false;
     let SPRITES = {};
 
     atlas.onload = () => { 
-        // Изображение ровно делится на 6 колонок и 3 строки
+        // Изображение делится на сетку 6 колонок и 3 строки (6x3)
+        // Вычисляем базовый размер одного сектора (w x h)
         const w = atlas.width / 6;  
         const h = atlas.height / 3; 
 
         SPRITES = {
             kuzya: {
-                idle: [0, 0, w, h],
+                idle: [0, 0, w, h], // Верхний ряд, 1 колонка
                 walk: [
-                    [w * 1, 0, w, h],     // Верхний ряд, 2 колонка
-                    [0, h, w, h],         // Средний ряд, 1 колонка
-                    [w * 1, h, w, h],     // Средний ряд, 2 колонка
-                    [w * 2, h, w, h],     // Средний ряд, 3 колонка
-                    [w * 3, h, w, h]      // Средний ряд, 4 колонка
+                    [w * 0, h, w, h], // Средний ряд, 1 колонка
+                    [w * 1, h, w, h], // Средний ряд, 2 колонка
+                    [w * 2, h, w, h], // Средний ряд, 3 колонка
+                    [w * 3, h, w, h], // Средний ряд, 4 колонка
+                    [w * 4, h, w, h]  // Средний ряд, 5 колонка (все 5 кадров ходьбы!)
                 ],
-                jump: [w * 5, 0, w, h]    // Верхний ряд, последняя колонка
+                jump: [w * 5, 0, w, h] // Верхний ряд, последняя колонка
             },
-            marci: [0, h * 2, w, h],                   // Нижний ряд, 1 колонка
-            rose: [w * 0.9, h * 2, w * 1.5, h],        // Нижний ряд, 2 колонка (Роза длинная)
-            pinkLitterbox: [w * 2.5, h * 2, w * 1.2, h], // Нижний ряд, 3-4 колонка
-            coinGold: [w * 5.2, h * 2, w * 0.6, h * 0.5], // Нижний ряд, край справа
-            coinFish: [w * 5.2, h * 2.5, w * 0.6, h * 0.5]
+            // Препятствия (Нижний ряд)
+            marci: [0, h * 2, w, h],              // Нижний ряд, 1 колонка
+            rose: [w * 0.9, h * 2, w * 1.5, h],   // Нижний ряд, 2 колонка (Роза длинная и лежачая, чуть увеличиваем ширину)
+            pinkLitterbox: [w * 2.8, h * 2, w * 1.3, h], // Цель
+            coinGold: [w * 5.2, h * 2, w * 0.6, h * 0.5], // Монета (сверху справа)
+            coinFish: [w * 5.2, h * 2.5, w * 0.7, h * 0.4] // Монета-рыбка
         };
 
         isAtlasLoaded = true; 
@@ -78,6 +81,7 @@
         }
         draw() {
             if (!isAtlasLoaded) return;
+            // По умолчанию берем первый кадр или единственные координаты
             const coord = Array.isArray(SPRITES[this.type][0]) ? SPRITES[this.type][0] : SPRITES[this.type];
             if (coord) ctx.drawImage(atlas, ...coord, this.x, this.y, this.w, this.h);
         }
@@ -86,34 +90,43 @@
 
     class Kuzya extends GameObject {
         constructor() {
+            // Центрируем спрайт 80x80 в линии
             super(0, 0, 80, 80, 'kuzya'); 
-            this.lane = 1; // Старт по центру
+            this.lane = 1; // Старт по центру (0, 1, 2)
+            this.targetX = 0;
             this.isJumping = false; this.jumpVelocity = 0;
             this.walkTimer = 0; this.currentWalkFrame = 0;
         }
         draw() {
             if (!isAtlasLoaded) return;
-            let coord = this.isJumping ? SPRITES.kuzya.jump : SPRITES.kuzya.walk[this.currentWalkFrame];
+            let coord;
+            if (this.isJumping) {
+                coord = SPRITES.kuzya.jump;
+            } else {
+                // Анимация ходьбы Кузи (все 5 кадров)
+                coord = SPRITES.kuzya.walk[this.currentWalkFrame];
+            }
             ctx.drawImage(atlas, ...coord, this.x, this.y, this.w, this.h);
         }
         update(deltaTime) {
-            LANES.WIDTH = width / LANES.COUNT;
+            // 1. Движение между линиями
             this.targetX = (this.lane * LANES.WIDTH) + LANES.WIDTH / 2 - this.w / 2;
-            this.x += (this.targetX - this.x) * 0.25; // Плавное перемещение
+            this.x += (this.targetX - this.x) * 0.25; // Сглаживание движения
             
-            this.y = groundY - this.h + 15; // Позиция ног на земле
+            // 2. Гравитация и прыжок
+            this.y = groundY - this.h + 10; // Позиция ног на земле
 
             if (this.isJumping) {
                 this.y -= this.jumpVelocity;
-                this.jumpVelocity -= 1.2; // Гравитация
-                if (this.y >= groundY - this.h + 15) {
-                    this.y = groundY - this.h + 15;
+                this.jumpVelocity -= 1.2; 
+                if (this.y >= groundY - this.h + 10) {
+                    this.y = groundY - this.h + 10;
                     this.isJumping = false;
                 }
             } else {
-                // Анимация ходьбы Кузи
+                // Анимация ходьбы
                 this.walkTimer += deltaTime;
-                if (this.walkTimer > 0.1) { // Скорость перебирания лапками
+                if (this.walkTimer > 0.12) { // Интервал переключения кадров
                     this.currentWalkFrame = (this.currentWalkFrame + 1) % SPRITES.kuzya.walk.length;
                     this.walkTimer = 0;
                 }
@@ -136,7 +149,7 @@
         update(deltaTime) { this.x -= this.speed * deltaTime * 60; }
     }
 
-    let kuzya, gameObjects = [], gameSpeed = 6, nextObstacleTime = 0;
+    let kuzya, gameObjects = [], gameSpeed = 5, nextObstacleTime = 0;
 
     const generateLevel = (time) => {
         if (time > nextObstacleTime && gameState.isRunning) {
@@ -146,23 +159,17 @@
 
             const typeProb = Math.random();
             if (typeProb > 0.6) {
-                // Генерация монет
                 const isFish = Math.random() < 0.2; 
                 gameObjects.push(new Obstacle(xSpawn, ySpawn - 70, 40, 40, isFish ? 'coinFish' : 'coinGold', gameSpeed));
-            } else if (typeProb > 0.15) {
-                // Генерация котов-препятствий
+            } else if (typeProb > 0.2) {
                 const isMarci = Math.random() > 0.5;
                 const catType = isMarci ? 'marci' : 'rose';
-                const catW = isMarci ? 65 : 90; // Роза шире
-                const catH = isMarci ? 65 : 60; 
-                gameObjects.push(new Obstacle(xSpawn, groundY - catH + 15, catW, catH, catType, gameSpeed));
+                const catW = isMarci ? 65 : 85; const catH = isMarci ? 60 : 55; 
+                gameObjects.push(new Obstacle(xSpawn, groundY - catH + 10, catW, catH, catType, gameSpeed));
             }
 
-            nextObstacleTime = time + (1200 - gameState.level * 80);
-            if (Math.random() < 0.05) {
-                gameState.level++; 
-                gameSpeed += 0.5; // Ускоряем игру
-            }
+            nextObstacleTime = time + (1500 - gameState.level * 80);
+            if (Math.random() < 0.1) gameState.level++; // Повышение уровня
         }
     };
 
@@ -172,11 +179,10 @@
         ctx.clearRect(0, 0, width, height);
         const deltaTime = (time - lastTime) / 1000; lastTime = time;
 
-        // Пол
+        // Фон земли
         ctx.fillStyle = '#2c3e50'; ctx.fillRect(0, groundY, width, height - groundY);
-        
-        // Линии (дорожки)
-        ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 4;
+        // Линии дорожек
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.lineWidth = 2;
         for(let i=1; i<LANES.COUNT; i++) {
             ctx.beginPath(); ctx.moveTo(i * LANES.WIDTH, groundY); ctx.lineTo(i * LANES.WIDTH, height); ctx.stroke();
         }
@@ -186,19 +192,16 @@
 
         gameObjects.forEach((obj, index) => {
             obj.update(deltaTime); obj.draw();
-            
+            // Проверка коллизий
             if (isColliding(kuzya, obj)) {
                 if (obj.type.startsWith('coin')) {
                     gameState.coins += (obj.type === 'coinFish' ? 5 : 1);
                     gameState.score += 10;
                     if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
                     gameObjects.splice(index, 1);
-                } else { endGame(); }
+                } else { endGame(); } // Врезались в кота
             }
-            if (obj.x < -obj.w) {
-                gameObjects.splice(index, 1);
-                gameState.score += 1; // Даем очко за успешный уворот
-            }
+            if (obj.x < -obj.w) gameObjects.splice(index, 1);
         });
 
         uiCoins.innerText = gameState.coins; uiScore.innerText = gameState.score;
@@ -206,24 +209,22 @@
     };
 
     const isColliding = (r1, r2) => {
-        // Уменьшенный хитбокс (чтобы засчитывало касание только "телом", а не краем картинки)
-        const padX = 20; const padY = 20;
-        return r1.x + padX < r2.x + r2.w - padX && 
-               r1.x + r1.w - padX > r2.x + padX &&
-               r1.y + padY < r2.y + r2.h - padY && 
-               r1.h + r1.y - padY > r2.y + padY;
+        // Уменьшенный хитбокс для честности
+        const padX = 15; const padY = 15;
+        return r1.x + padX < r2.x + r2.w && r1.x + r1.w - padX > r2.x &&
+               r1.y + padY < r2.y + r2.h && r1.h + r1.y - padY > r2.y;
     };
 
     const endGame = () => {
         gameState.isRunning = false;
         if(tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('error');
-        alert(`ОЙ! Кузя споткнулся.\nСобрано монет: ${gameState.coins}\nОчки: ${gameState.score}`);
+        alert(`GAME OVER. Собрано монет: ${gameState.coins}`);
         startGame();
     };
 
     const startGame = () => {
         if (!isAtlasLoaded) return;
-        gameState.score = 0; gameState.coins = 0; gameState.level = 1; gameSpeed = 6;
+        gameState.score = 0; gameState.coins = 0; gameState.level = 1; gameSpeed = 5;
         kuzya = new Kuzya(); gameObjects = []; gameState.isRunning = true;
         if(lastTime === 0) requestAnimationFrame(loop);
     };
@@ -235,29 +236,14 @@
 
     window.addEventListener('resize', resize); resize();
 
-    // УПРАВЛЕНИЕ (СВАЙПЫ И КЛИКИ)
-    let touchStartX = 0; let touchStartY = 0;
+    // УПРАВЛЕНИЕ (TOUCH)
     canvas.addEventListener('touchstart', (e) => {
         e.preventDefault();
-        touchStartX = e.touches[0].clientX; touchStartY = e.touches[0].clientY;
-    }, {passive: false});
-
-    canvas.addEventListener('touchend', (e) => {
-        e.preventDefault();
-        const touchEndX = e.changedTouches[0].clientX; const touchEndY = e.changedTouches[0].clientY;
-        const diffX = touchEndX - touchStartX; const diffY = touchEndY - touchStartY;
-
-        // Если свайп вверх — прыжок, иначе смена линии
-        if (diffY < -30 && Math.abs(diffY) > Math.abs(diffX)) {
-            kuzya.jump();
-        } else if (Math.abs(diffX) > 30) {
-            kuzya.switchLane(diffX > 0 ? 1 : -1);
-        } else {
-            // Обычный тап (если просто нажали)
-            if (touchEndY < height * 0.5) kuzya.jump();
-            else if (touchEndX < width / 2) kuzya.switchLane(-1);
-            else kuzya.switchLane(1);
-        }
+        const touch = e.touches[0];
+        // Управление: Верхняя половина - прыжок, нижняя половина (лево/право) - линии
+        if (touch.clientY < height * 0.5) kuzya.jump();
+        else if (touch.clientX < width / 2) kuzya.switchLane(-1);
+        else kuzya.switchLane(1);
     }, {passive: false});
 
 </script>
