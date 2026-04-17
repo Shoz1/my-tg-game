@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Моя Telegram Игра</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {
+            /* Используем системные цвета темы Telegram пользователя */
+            background-color: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #000000);
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+        button {
+            background-color: var(--tg-theme-button-color, #3390ec);
+            color: var(--tg-theme-button-text-color, #ffffff);
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            font-size: 16px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1 id="greeting">Загрузка...</h1>
+    <p>Твой ID: <span id="user-id">...</span></p>
+    
+    <button onclick="tg.close()">Закрыть игру</button>
+
+    <script>
+        // Инициализация объекта Telegram Web App
+        const tg = window.Telegram.WebApp;
+        
+        // Расширяем приложение на весь экран
+        tg.expand();
+        
+        // Сообщаем Telegram, что приложение готово к отображению
+        tg.ready();
+
+        // Достаем данные пользователя
+        const user = tg.initDataUnsafe.user;
+
+        if (user) {
+            document.getElementById('greeting').innerText = `Привет, ${user.first_name}! 🚀`;
+            document.getElementById('user-id').innerText = user.id;
+        } else {
+            document.getElementById('greeting').innerText = "Привет! (запущено вне Telegram)";
+        }
+    </script>
+</body>
+</html>
