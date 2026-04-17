@@ -3,58 +3,340 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Моя Telegram Игра</title>
+    <title>Приключения Кузи: Путь к Лотку</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
     <style>
-        body {
-            /* Используем системные цвета темы Telegram пользователя */
-            background-color: var(--tg-theme-bg-color, #ffffff);
-            color: var(--tg-theme-text-color, #000000);
-            font-family: sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-        }
-        button {
-            background-color: var(--tg-theme-button-color, #3390ec);
-            color: var(--tg-theme-button-text-color, #ffffff);
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            font-size: 16px;
-            margin-top: 20px;
-        }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #333; font-family: 'VT323', monospace; color: white; user-select: none; touch-action: none; }
+        #ui { position: absolute; top: 10px; left: 10px; z-index: 10; font-size: 28px; font-weight: bold; pointer-events: none; text-shadow: 2px 2px 0 #000; letter-spacing: 2px; }
+        #ui span { color: #f1c40f; } /* Монеты золотые */
+        canvas { display: block; image-rendering: pixelated; /* ВКЛЮЧАЕТ ЧЕТКИЙ ПИКСЕЛЬ-АРТ */ }
     </style>
 </head>
 <body>
 
-    <h1 id="greeting">Загрузка...</h1>
-    <p>Твой ID: <span id="user-id">...</span></p>
-    
-    <button onclick="tg.close()">Закрыть игру</button>
+    <div id="ui">
+        Монеты: <span id="coins-val">0</span> / Очки: <span id="score-val">0</span>
+    </div>
 
-    <script>
-        // Инициализация объекта Telegram Web App
-        const tg = window.Telegram.WebApp;
-        
-        // Расширяем приложение на весь экран
-        tg.expand();
-        
-        // Сообщаем Telegram, что приложение готово к отображению
-        tg.ready();
+    <canvas id="gameCanvas"></canvas>
 
-        // Достаем данные пользователя
-        const user = tg.initDataUnsafe.user;
+<script>
+    // --- ИНИЦИАЛИЗАЦИЯ И УПРАВЛЕНИЕ ---
+    const tg = window.Telegram.WebApp;
+    tg.expand();
+    tg.ready();
 
-        if (user) {
-            document.getElementById('greeting').innerText = `Привет, ${user.first_name}! 🚀`;
-            document.getElementById('user-id').innerText = user.id;
-        } else {
-            document.getElementById('greeting').innerText = "Привет! (запущено вне Telegram)";
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const uiCoins = document.getElementById('coins-val');
+    const uiScore = document.getElementById('score-val');
+
+    let width, height, cx, cy;
+    let groundY; // Позиция земли
+
+    // Настройки пикселей
+    ctx.imageSmoothingEnabled = false; // Убираем сглаживание
+
+    // --- ИГРОВОЕ СОСТОЯНИЕ ---
+    let gameState = {
+        score: 0,
+        coins: 0,
+        level: 1,
+        isRunning: false,
+        kuzyaStats: { speed: 5, jump: 18 }, // Чуть выше прыжок
+    };
+
+    // --- ЗАГРУЗКА СПРАЙТОВ (АТЛАС) ---
+    const atlas = new Image();
+    atlas.src = 'image_8.png'; // Убедись, что файл в той же папке на GitHub
+    let isAtlasLoaded = false;
+    atlas.onload = () => { isAtlasLoaded = true; startGame(); };
+
+    // --- КООРДИНАТЫ В АТЛАСЕ [x, y, w, h] ---
+    const SPRITES = {
+        // КУЗЯ (Верхний ряд)
+        kuzya: {
+            idle: [0, 0, 80, 80],
+            walk: [
+                [80, 0, 80, 80], // Кадр 1
+                [160, 0, 80, 80], // Кадр 2
+                [240, 0, 80, 80], // Кадр 3
+                [320, 0, 80, 80]  // Кадр 4
+            ],
+            jump: [400, 0, 80, 80]
+        },
+        // ПРЕПЯТСТВИЯ (Средний ряд)
+        marci: [0, 100, 80, 60], // Марси низкая
+        rose: [80, 100, 80, 60], // Роза длинная и лежачая
+        // ОКРУЖЕНИЕ И ПРЕДМЕТЫ (Нижний ряд)
+        pinkLitterbox: [0, 180, 100, 80],
+        floorTile: [100, 180, 40, 40],
+        bgLayer: [140, 180, 80, 80], // Шторы
+        coinGold: [220, 180, 30, 30],
+        coinFish: [250, 180, 30, 30]
+    };
+
+    // --- КОНСТАНТЫ ЛИНИЙ (3 полосы) ---
+    const LANES = { 
+        COUNT: 3,
+        START_X: 0,
+        WIDTH: 0, // Вычислим при resize
+        CENTER_X: [] // Вычислим при resize
+    };
+
+    // --- КЛАССЫ ИГРОВЫХ ОБЪЕКТОВ ---
+
+    class GameObject {
+        constructor(x, y, w, h, type) {
+            this.x = x; this.y = y; this.w = w; this.h = h; this.type = type;
+            this.id = Date.now() + Math.random();
         }
-    </script>
+        draw() {
+            if (!isAtlasLoaded) return;
+            const spriteCoord = SPRITES[this.type];
+            if (spriteCoord) {
+                // Рисуем спрайт из атласа
+                ctx.drawImage(atlas, ...spriteCoord, this.x, this.y, this.w, this.h);
+            }
+        }
+        update(deltaTime) {}
+    }
+
+    // КЛАСС: КУЗЯ (Главный герой)
+    class Kuzya extends GameObject {
+        constructor() {
+            // Центрируем его в линии
+            const laneWidth = width / LANES.COUNT;
+            const startX = laneWidth / 2 - 40; // Размер спрайта 80
+            super(startX, groundY - 80, 80, 80, 'kuzya'); // Спрайт 80x80
+            this.lane = 0; // Стартуем в центральной линии (0, 1, 2)
+            this.targetX = startX;
+            this.isJumping = false;
+            this.jumpVelocity = 0;
+            // Анимация
+            this.walkTimer = 0;
+            this.currentWalkFrame = 0;
+        }
+
+        draw() {
+            if (!isAtlasLoaded) return;
+            let coord;
+            if (this.isJumping) {
+                coord = SPRITES.kuzya.jump;
+            } else {
+                // Ходьба
+                coord = SPRITES.kuzya.walk[this.currentWalkFrame];
+            }
+            ctx.drawImage(atlas, ...coord, this.x, this.y, this.w, this.h);
+        }
+
+        update(deltaTime) {
+            // 1. Движение между линиями (плавное скольжение)
+            const laneWidth = width / LANES.COUNT;
+            this.targetX = (this.lane * laneWidth) + laneWidth / 2 - this.w / 2;
+            
+            // Плавное движение по X
+            this.x += (this.targetX - this.x) * 0.2; 
+
+            // 2. Логика прыжка (гравитация)
+            if (this.isJumping) {
+                this.y -= this.jumpVelocity;
+                this.jumpVelocity -= 1.2; // Простая гравитация
+                if (this.y >= groundY - this.h) {
+                    this.y = groundY - this.h;
+                    this.isJumping = false;
+                    this.jumpVelocity = 0;
+                }
+            } else {
+                // Анимация ходьбы (только если не прыгает)
+                this.walkTimer += deltaTime;
+                if (this.walkTimer > 0.15) { // Интервал 150мс
+                    this.currentWalkFrame = (this.currentWalkFrame + 1) % SPRITES.kuzya.walk.length;
+                    this.walkTimer = 0;
+                }
+            }
+        }
+
+        switchLane(dir) {
+            this.lane = Math.max(0, Math.min(LANES.COUNT - 1, this.lane + dir));
+            tg.HapticFeedback.impactOccurred('light'); // Легкая вибрация
+        }
+
+        jump() {
+            if (!this.isJumping) {
+                this.isJumping = true;
+                this.jumpVelocity = gameState.kuzyaStats.jump;
+                tg.HapticFeedback.impactOccurred('medium');
+            }
+        }
+    }
+
+    // КЛАСС: МОНЕТА / ПРЕПЯТСТВИЕ
+    class Obstacle extends GameObject {
+        constructor(x, y, w, h, type, speed) {
+            super(x, y, w, h, type);
+            this.speed = speed;
+        }
+        draw() {
+            if (!isAtlasLoaded) return;
+            let coord;
+            if (this.type === 'marci') coord = SPRITES.marci;
+            else if (this.type === 'rose') coord = SPRITES.rose;
+            else if (this.type === 'coinGold') coord = SPRITES.coinGold;
+            else if (this.type === 'coinFish') coord = SPRITES.coinFish;
+            else coord = SPRITES.pinkLitterbox; // Цель
+
+            if (coord) {
+                 ctx.drawImage(atlas, ...coord, this.x, this.y, this.w, this.h);
+            }
+        }
+        update(deltaTime) {
+            this.x -= this.speed * deltaTime * 60; // Движение влево
+        }
+    }
+
+    // --- МЕНЕДЖЕР УРОВНЕЙ И ГЕНЕРАЦИЯ ---
+    let kuzya;
+    let gameObjects = [];
+    let gameSpeed = 5;
+    let nextObstacleTime = 0;
+
+    const generateLevel = (time) => {
+        if (time > nextObstacleTime && gameState.isRunning) {
+            // Генерация: случайный предмет в случайной линии
+            const lane = Math.floor(Math.random() * LANES.COUNT);
+            const laneWidth = width / LANES.COUNT;
+            const xSpawn = width + 50;
+            const ySpawn = groundY; // База на земле
+
+            const typeProb = Math.random();
+            if (typeProb > 0.6) {
+                // Генерируем монету (чуть выше земли)
+                const isFish = Math.random() < 0.2; // 20% шанс рыбки
+                gameObjects.push(new Obstacle(xSpawn, ySpawn - 60, 30, 30, isFish ? 'coinFish' : 'coinGold', gameSpeed));
+            } else if (typeProb > 0.2) {
+                // Обычное препятствие (Марси или Роза)
+                const isMarci = Math.random() > 0.5;
+                const catType = isMarci ? 'marci' : 'rose';
+                const catW = isMarci ? 60 : 80;
+                const catH = isMarci ? 40 : 60; // Марси низкая, Роза выше
+                gameObjects.push(new Obstacle(xSpawn, groundY - catH, catW, catH, catType, gameSpeed));
+            } else {
+                 // Уникальное препятствие (например, более сложный паттерн из двух котов)
+                 // Пропускаем пока для простоты
+            }
+
+            // Повышение сложности
+            nextObstacleTime = time + (1500 - gameState.level * 100); // Интервалы меньше
+            if (Math.random() < 0.1) {
+                gameState.level++; // Редкое повышение уровня
+                tg.HapticFeedback.notificationOccurred('success');
+            }
+        }
+    };
+
+
+    // --- ИГРОВОЙ ЦИКЛ (LOOP) ---
+    let lastTime = 0;
+    const loop = (time) => {
+        if (!gameState.isRunning || !isAtlasLoaded) {
+            // Отрисовка "Загрузка" или "Ожидание", пока спрайты грузятся
+            ctx.fillStyle = '#222'; ctx.fillRect(0, 0, width, height);
+            ctx.fillStyle = '#fff'; ctx.font = '40px VT323'; ctx.textAlign = 'center';
+            ctx.fillText("ЗАГРУЗКА СПРАЙТОВ...", cx, cy);
+            if(isAtlasLoaded) startGame();
+            return;
+        }
+
+        ctx.clearRect(0, 0, width, height);
+        
+        const deltaTime = (time - lastTime) / 1000;
+        lastTime = time;
+
+        // 1. Отрисовка фона (шторы)
+        ctx.fillStyle = '#2c3e50'; ctx.fillRect(0, 0, width, height);
+        // Рисуем шторы по верху
+        const bgCoord = SPRITES.bgLayer;
+        ctx.drawImage(atlas, ...bgCoord, cx - 120, 50, 240, 240); // Центрированная штора
+
+        // 2. Отрисовка земли (плитка)
+        const tileCoord = SPRITES.floorTile;
+        ctx.drawImage(atlas, ...tileCoord, 0, groundY, width, height - groundY);
+        // Добавим текстуру плитки (просто зальем pattern-ом)
+        // (Опустим для простоты, просто зальем спрайтом пола)
+
+        // 3. Генерация
+        generateLevel(time);
+
+        // 4. Апдейт и отрисовка Кузи
+        kuzya.update(deltaTime);
+        kuzya.draw();
+
+        // 5. Апдейт и отрисовка объектов
+        gameObjects.forEach((obj, index) => {
+            obj.update(deltaTime);
+            obj.draw();
+
+            // Проверка коллизий (Кузя)
+            if (isColliding(kuzya, obj)) {
+                if (obj.type.startsWith('coin')) {
+                    gameState.coins += (obj.type === 'coinFish' ? 5 : 1);
+                    gameState.score += 10;
+                    gameObjects.splice(index, 1);
+                } else if (obj.type === 'marci' || obj.type === 'rose') {
+                    endGame();
+                }
+            }
+
+            // Удаление объектов, ушедших за экран
+            if (obj.x < -obj.w) gameObjects.splice(index, 1);
+        });
+
+        // 6. UI
+        uiCoins.innerText = gameState.coins;
+        uiScore.innerText = gameState.score;
+
+        requestAnimationFrame(loop);
+    };
+
+    // ПРОВЕРКА КОЛЛИЗИЙ (AABB)
+    const isColliding = (r1, r2) => {
+        return r1.x < r2.x + r2.w &&
+               r1.x + r1.w > r2.x &&
+               r1.y < r2.y + r2.h &&
+               r1.h + r1.y > r2.y;
+    };
+
+    const endGame = () => {
+        gameState.isRunning = false;
+        tg.HapticFeedback.notificationOccurred('error'); // Тряска телефона
+        alert(`GAME OVER. Монеты: ${gameState.coins}, Очки: ${gameState.score}`);
+        // Тут потом будет запрос к бэкенду для сохранения монет
+        startGame();
+    };
+
+    const startGame = () => {
+        if (!isAtlasLoaded) return;
+        gameState.score = 0; gameState.coins = 0; gameState.level = 1; gameSpeed = 5;
+        kuzya = new Kuzya();
+        gameObjects = [];
+        gameState.isRunning = true;
+        // Перезапускаем loop, если он остановился
+        if(lastTime === 0) requestAnimationFrame(loop);
+    };
+
+    const resize = () => {
+        width = canvas.width = window.innerWidth;
+        height = canvas.height = window.innerHeight;
+        cx = width / 2; cy = height / 2;
+        groundY = height * 0.75; // Земля на 75% высоты
+    };
+
+    window.addEventListener('resize', resize);
+    resize();
+    // Игра запустится сама, когда загрузятся спрайты
+
+</script>
 </body>
 </html>
